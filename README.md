@@ -41,7 +41,7 @@ Gaussian splatting for VRChat worlds: runtime camera-sorted rendering through Ud
 
 1. Import the unitypackage from [releases](https://github.com/MichaelMoroz/VRChatGaussianSplatting/releases), or clone the repo.
 2. Open `Gaussian Splatting / Import Splats...`.
-3. Add one or more `.ply` / `.spz` files, choose an output folder, and pick an **Import Mode**.
+3. Add one or more `.ply` / `.spz` files, choose an output folder, and pick an **Import Mode**. SPZ imports support gzip-compressed v2/v3 files with SH0–SH3 and the standard RUB coordinate system; v1, v4, and extension-bearing files are rejected. SPZ positions, rotations, and SH coefficients are converted to the PLY/RDF convention before the common Unity import step.
 4. Configure the import options (see below) and import.
 5. Drag the imported prefabs into the scene. The editor automatically creates the scene `GaussianSplatRenderer` and the world-space control UI when needed.
 6. Tune material/render settings from the renderer inspector or the in-world UI.
@@ -262,7 +262,7 @@ VRChat ワールド向けのガウシアンスプラッティング：Udon に�
 
 1. [releases](https://github.com/MichaelMoroz/VRChatGaussianSplatting/releases) から unitypackage をインポートするか、リポジトリをクローンする。
 2. `Gaussian Splatting / Import Splats...` を開く。
-3. 1 つ以上の `.ply` / `.spz` を追加し、出力フォルダと **インポートモード** を選択する。
+3. 1 つ以上の `.ply` / `.spz` を追加し、出力フォルダと **インポートモード** を選択する。SPZ は標準 RUB 座標系・SH0～SH3 の gzip 圧縮 v2/v3 に対応（v1、v4、拡張付きファイルは非対応）。位置・回転・SH 係数を PLY/RDF の規約に変換してから共通の Unity インポート処理へ渡す。
 4. インポートオプション（下記）を設定してインポートする。
 5. 生成されたプレハブをシーンにドラッグする。必要に応じてエディタがシーンの `GaussianSplatRenderer` とワールド空間コントロール UI を自動生成する。
 6. レンダラーのインスペクター、またはワールド内 UI からマテリアル／レンダリング設定を調整する。

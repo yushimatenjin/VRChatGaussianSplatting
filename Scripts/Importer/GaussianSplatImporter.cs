@@ -42,7 +42,8 @@ namespace GaussianSplatting
         const string PlyExtension = ".ply";
         const string SpzExtension = ".spz";
         const uint SpzMagic = 0x5053474e; // "NGSP"
-        const uint SpzVersion = 2;
+        const uint SpzVersion2 = 2;
+        const uint SpzVersion3 = 3;
         const int MaxSpzSplatCount = 10_000_000;
         const int SpzBaseFloatCount = 14;
         const int SpzRowsPerOutputChunk = 8192;
@@ -474,6 +475,7 @@ namespace GaussianSplatting
 
         struct SpzHeader
         {
+            public uint version;
             public int splatCount;
             public int shLevel;
             public int fractionalBits;
@@ -495,7 +497,8 @@ namespace GaussianSplatting
             byte[] packedAlpha = new byte[header.splatCount];
             byte[] packedColors = new byte[checked(header.splatCount * 3)];
             byte[] packedScales = new byte[checked(header.splatCount * 3)];
-            byte[] packedRotations = new byte[checked(header.splatCount * 3)];
+            int rotationStride = header.version == SpzVersion3 ? 4 : 3;
+            byte[] packedRotations = new byte[checked(header.splatCount * rotationStride)];
             byte[] packedSh = new byte[checked(header.splatCount * shCoeffCount * 3)];
 
             ReadExact(gzip, packedPositions, packedPositions.Length, spzPath);
@@ -529,7 +532,7 @@ namespace GaussianSplatting
             {
                 throw new IOException($"SPZ {spzPath} read error, header magic unexpected {magic}");
             }
-            if (version != SpzVersion)
+            if (version != SpzVersion2 && version != SpzVersion3)
             {
                 throw new IOException($"SPZ {spzPath} read error, header version unexpected {version}");
             }
@@ -541,6 +544,14 @@ namespace GaussianSplatting
             int splatCount = (int)splatCountU;
             int shLevel = (int)(packed & 0xFF);
             int fractionalBits = (int)((packed >> 8) & 0xFF);
+            int flags = (int)((packed >> 16) & 0xFF);
+
+            // Only the antialiasing bit is understood. In particular, extensions can
+            // override the storage coordinate system, so do not silently assume RUB.
+            if ((flags & ~1) != 0)
+            {
+                throw new IOException($"SPZ {spzPath} read error, unsupported flags {flags}");
+            }
 
             if (splatCount < 1 || splatCount > MaxSpzSplatCount)
             {
@@ -557,6 +568,7 @@ namespace GaussianSplatting
 
             return new SpzHeader
             {
+                version = version,
                 splatCount = splatCount,
                 shLevel = shLevel,
                 fractionalBits = fractionalBits
@@ -632,7 +644,7 @@ namespace GaussianSplatting
                 for (int row = 0; row < rows; row++)
                 {
                     int index = processed + row;
-                    WriteSpzSplatAsPlyRow(buffer, ref writeOffset, index, positionScale, shCoeffCount, packedPositions, packedAlpha, packedColors, packedScales, packedRotations, packedSh);
+                    WriteSpzSplatAsPlyRow(buffer, ref writeOffset, index, positionScale, shCoeffCount, packedPositions, packedAlpha, packedColors, packedScales, packedRotations, packedSh, header.version);
                 }
                 output.Write(buffer, 0, rows * stride);
                 processed += rows;
@@ -650,11 +662,13 @@ namespace GaussianSplatting
             byte[] packedColors,
             byte[] packedScales,
             byte[] packedRotations,
-            byte[] packedSh)
+            byte[] packedSh,
+            uint version)
         {
             WriteFloat(output, ref offset, UnpackSpzPosition(packedPositions, index * 3 + 0) * positionScale);
-            WriteFloat(output, ref offset, UnpackSpzPosition(packedPositions, index * 3 + 1) * positionScale);
-            WriteFloat(output, ref offset, UnpackSpzPosition(packedPositions, index * 3 + 2) * positionScale);
+            // SPZ storage is RUB. Resolve to PLY's RDF before the common Unity conversion.
+            WriteFloat(output, ref offset, -UnpackSpzPosition(packedPositions, index * 3 + 1) * positionScale);
+            WriteFloat(output, ref offset, -UnpackSpzPosition(packedPositions, index * 3 + 2) * positionScale);
 
             WriteFloat(output, ref offset, UnpackSpzColorDC(packedColors[index * 3 + 0]));
             WriteFloat(output, ref offset, UnpackSpzColorDC(packedColors[index * 3 + 1]));
@@ -665,18 +679,24 @@ namespace GaussianSplatting
             WriteFloat(output, ref offset, UnpackSpzLogScale(packedScales[index * 3 + 1]));
             WriteFloat(output, ref offset, UnpackSpzLogScale(packedScales[index * 3 + 2]));
 
-            Vector4 q = UnpackSpzRotationWXYZ(packedRotations, index);
+            Vector4 q = version == SpzVersion3
+                ? UnpackSpzRotationV3WXYZ(packedRotations, index)
+                : UnpackSpzRotationWXYZ(packedRotations, index);
             WriteFloat(output, ref offset, q.x);
             WriteFloat(output, ref offset, q.y);
-            WriteFloat(output, ref offset, q.z);
-            WriteFloat(output, ref offset, q.w);
+            WriteFloat(output, ref offset, -q.z);
+            WriteFloat(output, ref offset, -q.w);
 
             int shBase = index * shCoeffCount * 3;
             for (int channel = 0; channel < 3; channel++)
             {
                 for (int coeff = 0; coeff < shCoeffCount; coeff++)
                 {
-                    WriteFloat(output, ref offset, UnpackSpzSH(packedSh[shBase + coeff * 3 + channel]));
+                    // RUB -> RDF is a half-turn about X. Flip the SH basis terms
+                    // that are odd in Y/Z, using Niantic's coefficient ordering.
+                    bool flip = coeff == 0 || coeff == 1 || coeff == 3 || coeff == 6
+                        || coeff == 8 || coeff == 10 || coeff == 11 || coeff == 13;
+                    WriteFloat(output, ref offset, (flip ? -1f : 1f) * UnpackSpzSH(packedSh[shBase + coeff * 3 + channel]));
                 }
             }
         }
@@ -716,6 +736,33 @@ namespace GaussianSplatting
 
             float invLength = 1.0f / length;
             return new Vector4(w * invLength, x * invLength, y * invLength, z * invLength);
+        }
+
+        // Niantic SPZ v3: two-bit largest-component index and three ten-bit
+        // sign/magnitude fields (one sign bit plus nine magnitude bits each).
+        static Vector4 UnpackSpzRotationV3WXYZ(byte[] data, int index)
+        {
+            uint packed = BitConverter.ToUInt32(data, index * 4);
+            int largest = (int)(packed >> 30);
+            Vector4 xyzw = Vector4.zero;
+            float sum = 0;
+            for (int component = 3; component >= 0; component--)
+            {
+                if (component == largest)
+                {
+                    continue;
+                }
+                float value = 0.7071067811865475f * (packed & 511u) / 511f;
+                if (((packed >> 9) & 1u) != 0)
+                {
+                    value = -value;
+                }
+                xyzw[component] = value;
+                sum += value * value;
+                packed >>= 10;
+            }
+            xyzw[largest] = Mathf.Sqrt(Mathf.Max(0, 1f - sum));
+            return new Vector4(xyzw.w, xyzw.x, xyzw.y, xyzw.z);
         }
 
         static float UnpackSpzSH(byte value)
