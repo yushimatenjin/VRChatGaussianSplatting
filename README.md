@@ -46,6 +46,8 @@ Gaussian splatting for VRChat worlds: runtime camera-sorted rendering through Ud
 5. Drag the imported prefabs into the scene. The editor automatically creates the scene `GaussianSplatRenderer` and the world-space control UI when needed.
 6. Tune material/render settings from the renderer inspector or the in-world UI.
 
+For color fidelity, leave **Compress ColorAlpha (BC7)** off and choose **SH Compression: None**. Both import modes then store DC color and normalized SH in RGBAHalf; combined scenes preserve those formats instead of clipping DC to 0–1 or recompressing SH to BC7. Explicit BC1/BC7 choices remain lossy. Uncompressed DC uses 8 bytes/texel (vs. 4 for RGBA32); uncompressed SH uses 8 bytes/texel (vs. 1 for BC7). If compressed and uncompressed SH sources are mixed, the whole fused SH texture uses RGBAHalf. Reimport existing sources to restore precision already lost during import; old fused bakes are invalidated automatically. This preserves numerical color data but does not correct capture/exposure differences or align scans.
+
 ### Import Modes
 
 - **LOD** (default) — a combined `GaussianSplatObject` with a downsampled LOD pyramid. The combiner selects per-chunk detail by camera distance and a scene-wide splat budget; full-detail LOD0 is preserved up close.
@@ -266,6 +268,8 @@ VRChat ワールド向けのガウシアンスプラッティング：Udon に�
 4. インポートオプション（下記）を設定してインポートする。
 5. 生成されたプレハブをシーンにドラッグする。必要に応じてエディタがシーンの `GaussianSplatRenderer` とワールド空間コントロール UI を自動生成する。
 6. レンダラーのインスペクター、またはワールド内 UI からマテリアル／レンダリング設定を調整する。
+
+色の精度を優先する場合は **色アルファを圧縮 (BC7)** をオフにし、**SH 圧縮: None** を選びます。両インポートモードで DC 色と正規化 SH を RGBAHalf に保存し、統合時にも DC の0～1へのクリップや SH の BC7 再圧縮を避けます。明示的に選択した BC1/BC7 は不可逆圧縮です。非圧縮 DC は1テクセル8バイト（RGBA32は4バイト）、非圧縮 SH は8バイト（BC7は1バイト）を使用します。圧縮・非圧縮の SH を混在させると統合 SH 全体が RGBAHalf になります。インポート時に失われた精度を戻すには元データの再インポートが必要です。古い統合ベイクは自動的に無効化されます。撮影時の露出差やスキャン間の位置ずれを補正する機能ではありません。
 
 ### インポートモード
 

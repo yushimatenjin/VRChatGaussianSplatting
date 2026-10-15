@@ -108,7 +108,7 @@ namespace GaussianSplatting
             // lists keep memory proportional to the actual content (a tiny import does not allocate a full set).
             readonly List<Color> _positionLinear;          // null when positions are packed
             readonly List<Color32> _packedPositionLinear;  // null when positions are float
-            readonly List<Color32> _colorLinear;
+            readonly List<Color> _colorLinear;
             readonly List<Color32> _rotationLinear;
             readonly List<Color> _scaleLinear;
 
@@ -140,7 +140,7 @@ namespace GaussianSplatting
                 int hint = Mathf.Clamp(capacity, 16, 1 << 16); // initial list capacity only; lists grow as needed
                 _positionLinear = usePackedPositions ? null : new List<Color>(hint);
                 _packedPositionLinear = usePackedPositions ? new List<Color32>(hint) : null;
-                _colorLinear = new List<Color32>(hint);
+                _colorLinear = new List<Color>(hint);
                 _rotationLinear = new List<Color32>(hint);
                 _scaleLinear = new List<Color>(hint);
                 _shCoeffCount = Mathf.Max(0, shCoeffCount);
@@ -166,9 +166,9 @@ namespace GaussianSplatting
                     _positionLinear.Add(new Color(splat.pos.x, splat.pos.y, splat.pos.z, 0.0f));
                 }
                 _colorLinear.Add(new Color(
-                    Mathf.Clamp01(splat.dc0.x),
-                    Mathf.Clamp01(splat.dc0.y),
-                    Mathf.Clamp01(splat.dc0.z),
+                    splat.dc0.x,
+                    splat.dc0.y,
+                    splat.dc0.z,
                     Mathf.Clamp01(splat.opacity)));
                 _rotationLinear.Add(new Color(
                     Mathf.Clamp01(0.5f + 0.5f * splat.rot.x),
@@ -202,7 +202,7 @@ namespace GaussianSplatting
                 int w = layout.Width;
                 string setName = _assetName + "_set" + _setIndex;
                 PositionTexture = NewTexture(layout.Width, layout.Height, _usePackedPositions ? TextureFormat.RGBA32 : TextureFormat.RGBAFloat, setName + "_xyz");
-                ColorTexture = NewTexture(layout.Width, layout.Height, TextureFormat.RGBA32, setName + "_color_dc");
+                ColorTexture = NewTexture(layout.Width, layout.Height, GaussianSplatImporter.ColorSourceTextureFormat(_compressColor), setName + "_color_dc");
                 RotationTexture = NewTexture(layout.Width, layout.Height, TextureFormat.RGBA32, setName + "_rotation");
                 ScaleTexture = NewTexture(layout.Width, layout.Height, TextureFormat.RGB9e5Float, setName + "_scale");
 
@@ -220,7 +220,7 @@ namespace GaussianSplatting
                     PositionTexture.SetPixels(px);
                 }
 
-                Color32[] col = new Color32[layout.Capacity];
+                Color[] col = new Color[layout.Capacity];
                 Color32[] rot = new Color32[layout.Capacity];
                 Color[] scl = new Color[layout.Capacity];
                 for (int i = 0; i < _count; i++)
@@ -230,7 +230,7 @@ namespace GaussianSplatting
                     rot[packed] = _rotationLinear[i];
                     scl[packed] = _scaleLinear[i];
                 }
-                ColorTexture.SetPixels32(col);
+                ColorTexture.SetPixels(col);
                 RotationTexture.SetPixels32(rot);
                 ScaleTexture.SetPixels(scl);
 
@@ -250,7 +250,7 @@ namespace GaussianSplatting
                     for (int i = 0; i < _count; i++)
                         for (int coeff = 0; coeff < _shCoeffCount; coeff++)
                             shPix[GaussianSplatImporter.ComputePackedTextureIndex(coeff * _count + i, sw)] = _shLinear[i * _shCoeffCount + coeff];
-                    SHTexture = NewTexture(shLayout.Width, shLayout.Height, TextureFormat.RGB565, setName + "_sh");
+                    SHTexture = NewTexture(shLayout.Width, shLayout.Height, GaussianSplatImporter.SHSourceTextureFormat(_shCompression), setName + "_sh");
                     SHTexture.SetPixels(shPix);
                     GaussianSplatImporter.ApplyShTextureCompression(SHTexture, _shCompression);   // shared SH None/BC1/BC7 (matches non-LOD)
                     SHTexture = GaussianSplatImporter.CreateOrReplaceAsset(SHTexture, _dataFolder + "/" + SHTexture.name + ".asset");

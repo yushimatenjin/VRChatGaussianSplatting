@@ -17,7 +17,7 @@ namespace GaussianSplatting
         public sealed class FuseLODSource
         {
             public Texture2D[] positions;   // RGBA32 packed, one per file
-            public Texture2D[] colors;      // RGBA32
+            public Texture2D[] colors;      // RGBAHalf when uncompressed, otherwise RGBA32/BC7
             public Texture2D[] rotations;   // RGBA32
             public Texture2D[] scales;      // RGB9e5Float
             public int[] fileSplatCounts;
@@ -271,7 +271,7 @@ namespace GaussianSplatting
             Color[] fbPix = new Color[fbw];
             for (int i = 0; i < fileBase.Count; i++) fbPix[i] = new Color(fileBase[i].x, fileBase[i].y, fileBase[i].z, fileBase[i].w);
 
-            // Unified SH set (BC7) + per-object params (4 cols x totalObjects rows; combine reads
+            // Unified SH set (RGBAHalf if any source is uncompressed, otherwise BC7) + per-object params (4 cols x totalObjects rows; combine reads
             // _LODShParams[uint2(param, objId)] -> array index objId*4 + param, matching append order).
             // ChoosePotTextureLayout can exceed the 16384 max texture dimension for a scene-wide fused SH; force a
             // POT width wide enough that height stays <= 16384 (single-texture ceiling is 16384^2 = 268M texels).
@@ -456,8 +456,9 @@ namespace GaussianSplatting
             readonly string _name;
             readonly string _folder;
             readonly FileAttr _attr;
+            readonly bool _preserveFloat;
 
-            AsyncConcatReadback(RenderTexture rt, AsyncGPUReadbackRequest request, int width, int height, string name, string folder, FileAttr attr)
+            AsyncConcatReadback(RenderTexture rt, AsyncGPUReadbackRequest request, int width, int height, string name, string folder, FileAttr attr, bool preserveFloat)
             {
                 _rt = rt;
                 _request = request;
@@ -466,11 +467,13 @@ namespace GaussianSplatting
                 _name = name;
                 _folder = folder;
                 _attr = attr;
+                _preserveFloat = preserveFloat;
             }
 
             public static AsyncConcatReadback Start(int width, int height, List<FileRegion> regions, FileAttr attr, string name, string folder)
             {
-                bool floatData = attr == FileAttr.Scale;
+                bool preserveFloat = PreserveFloatSource(regions, attr);
+                bool floatData = attr == FileAttr.Scale || preserveFloat;
                 RenderTextureFormat rtFormat = floatData ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGB32;
                 TextureFormat readbackFormat = floatData ? TextureFormat.RGBAFloat : TextureFormat.RGBA32;
                 Material mat = ConcatMat();
@@ -490,7 +493,7 @@ namespace GaussianSplatting
                     BlitRegion(mat, rt, src, regions[i].fusedBase, regions[i].count, regions[i].srcOffset);
                 }
                 RenderTexture.active = prev;
-                return new AsyncConcatReadback(rt, AsyncGPUReadback.Request(rt, 0, readbackFormat), width, height, name, folder, attr);
+                return new AsyncConcatReadback(rt, AsyncGPUReadback.Request(rt, 0, readbackFormat), width, height, name, folder, attr, preserveFloat);
             }
 
             public bool Step(out Texture2D texture)
@@ -508,10 +511,14 @@ namespace GaussianSplatting
                     // scale texture at 4 bytes/texel instead of 16.
                     texture = MakeTexF(_width, _height, _request.GetData<Color>().ToArray(), TextureFormat.RGB9e5Float, _name, _folder);
                 }
+                else if (_preserveFloat)
+                {
+                    texture = MakeTexF(_width, _height, _request.GetData<Color>().ToArray(), TextureFormat.RGBAHalf, _name, _folder);
+                }
                 else if (_attr == FileAttr.SH)
                 {
-                    // Source SH is <=8-bit quantized, so an RGBA32 -> BC7 fuse is ~lossless at 1 byte/texel; this
-                    // keeps a scene-wide SH set small (it can otherwise reach multiple GB and fail to allocate).
+                    // All participating SH sources were compressed. Keep the compact
+                    // BC7 path; uncompressed/mixed sources take the half-float branch above.
                     var sh = new Texture2D(_width, _height, TextureFormat.RGBA32, false, true) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Point, name = _name };
                     sh.SetPixels32(_request.GetData<Color32>().ToArray());
                     sh.Apply(false, false);
@@ -543,6 +550,25 @@ namespace GaussianSplatting
         // full-screen gather pass that writes only its [base, base+count) region (discard elsewhere),
         // so disjoint regions accumulate into one RT. One readback per attribute persists the asset.
         enum FileAttr { Pos, Col, Rot, Scale, SH }
+
+        static bool PreserveFloatSource(List<FileRegion> regions, FileAttr attr)
+        {
+            if (regions == null || (attr != FileAttr.Col && attr != FileAttr.SH)) return false;
+            foreach (FileRegion region in regions)
+            {
+                Texture2D source = attr == FileAttr.SH ? region.pos : region.col;
+                if (source == null || region.count <= 0) continue;
+                if (attr == FileAttr.Col)
+                {
+                    if (source.format == TextureFormat.RGBAHalf || source.format == TextureFormat.RGBAFloat) return true;
+                }
+                else if (source.format != TextureFormat.BC7 && source.format != TextureFormat.DXT1)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         internal struct FileRegion
         {
