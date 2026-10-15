@@ -105,7 +105,7 @@ namespace GaussianSplatting
             public int lodReusePercent;
             public bool normalizeSize;        // scale splats so the floater-robust extent matches normalizeTargetSize
             public float normalizeTargetSize; // target extent (world units) when normalizeSize is on; <=0 -> 1.0
-            public SHCompression shCompression; // SH texture format (both LOD and non-LOD): None (RGB565), BC1 (4bpp), BC7 (8bpp)
+            public SHCompression shCompression; // SH texture format: None (RGBAHalf), BC1 (4bpp), BC7 (8bpp)
         }
 
         // SH texture storage format, shared by both import paths.
@@ -201,6 +201,14 @@ namespace GaussianSplatting
             return best;
         }
 
+        // Keep DC in floating point until SH has been evaluated. In particular, negative
+        // and >1 channels must not be clipped independently before that sum.
+        public static TextureFormat ColorSourceTextureFormat(bool compressToBC7)
+            => compressToBC7 ? TextureFormat.RGBA32 : TextureFormat.RGBAHalf;
+
+        public static TextureFormat SHSourceTextureFormat(SHCompression mode)
+            => mode == SHCompression.None ? TextureFormat.RGBAHalf : TextureFormat.RGBA32;
+
         // Color/alpha texture: optional BC7 (shared by both import paths).
         public static void ApplyTexture(Texture2D texture, bool compressToBC7)
         {
@@ -215,7 +223,7 @@ namespace GaussianSplatting
             texture.Apply(false, true);
         }
 
-        // SH texture: None keeps the RGB565 source, BC1 -> DXT1 (4bpp), BC7 -> 8bpp. Shared by both import
+        // SH texture: None keeps the half-float source, BC1 -> DXT1 (4bpp), BC7 -> 8bpp. Shared by both import
         // paths so SH storage format matches regardless of LOD/non-LOD.
         public static void ApplyShTextureCompression(Texture2D texture, SHCompression mode)
         {
@@ -1033,10 +1041,10 @@ namespace GaussianSplatting
                     sortedTex = SaveTextureAsset(sortedTex, outputDataFolder, materialName + "_sorted_oct_dirs");
                 }
 
-                Texture2D colDcTex = NewTexture(splatLayout.Width, splatLayout.Height, TextureFormat.RGBA32, "ColorDC");
+                Texture2D colDcTex = NewTexture(splatLayout.Width, splatLayout.Height, ColorSourceTextureFormat(options.compressColorAlphaToBC7), "ColorDC");
                 Texture2D rotTex = NewTexture(splatLayout.Width, splatLayout.Height, TextureFormat.RGBA32, "Rotation");
                 Texture2D scaleTex = NewTexture(splatLayout.Width, splatLayout.Height, TextureFormat.RGB9e5Float, "Scale");
-                Texture2D shTex = importedSHCoeffCount > 0 ? NewTexture(shLayout.Width, shLayout.Height, TextureFormat.RGB565, "SH") : null;
+                Texture2D shTex = importedSHCoeffCount > 0 ? NewTexture(shLayout.Width, shLayout.Height, SHSourceTextureFormat(options.shCompression), "SH") : null;
 
                 Shader shader = options.useSRGB
                     ? Shader.Find("VRChatGaussianSplatting/GaussianSplatting")
@@ -3131,8 +3139,8 @@ namespace GaussianSplatting.Editor.Importers
                 DrawSHLimitWarnings(entry);
                 entry.shCompression = (GaussianSplatImporter.SHCompression)EditorGUILayout.EnumPopup(GSEditorText.T("SH Compression", "SH 圧縮"), entry.shCompression);
                 EditorGUILayout.HelpBox(GSEditorText.T(
-                    "SH texture format (LOD and non-LOD): None = RGB565 (largest), BC1 = 4bpp (smallest), BC7 = 8bpp. Compression is lossy but SH error is small. (LOD only: the import steps down to the highest band that fits its SH cap, and the scene's fused SH must fit one texture; objects past that fall back to DC.)",
-                    "SH テクスチャ形式 (LOD・非 LOD 共通): None = RGB565 (最大)、BC1 = 4bpp (最小)、BC7 = 8bpp。圧縮は不可逆ですが SH の誤差は小さいです。(LOD のみ: インポートは SH 上限に収まる最大バンドまで自動的に下げられ、さらにシーン全体の統合 SH は 1 テクスチャに収まる必要があります。超過するオブジェクトは DC にフォールバックします。)"), MessageType.Info);
+                    "SH texture format (LOD and non-LOD): None = RGBAHalf (64bpp), BC1 = 4bpp, BC7 = 8bpp. None preserves precision and remains uncompressed when fused, but uses 8x the BC7 texture memory. Mixing compressed and uncompressed SH makes the fused SH texture RGBAHalf. The fused SH texel cap still applies.",
+                    "SH テクスチャ形式 (LOD・非 LOD 共通): None = RGBAHalf (64bpp)、BC1 = 4bpp、BC7 = 8bpp。None は統合時も非圧縮で精度を保持しますが、BC7 の8倍のテクスチャメモリを使用します。圧縮・非圧縮の SH を混在させると統合 SH 全体が RGBAHalf になります。統合 SH のテクセル数上限は引き続き適用されます。"), MessageType.Info);
             }
             else
             {
@@ -3145,6 +3153,12 @@ namespace GaussianSplatting.Editor.Importers
 
             // Color/alpha texture compression — common to both paths (both outputs have a color texture).
             entry.compressColorAlphaToBC7 = EditorGUILayout.Toggle(GSEditorText.T("Compress ColorAlpha (BC7)", "色アルファを圧縮 (BC7)"), entry.compressColorAlphaToBC7);
+            if (!entry.compressColorAlphaToBC7)
+            {
+                EditorGUILayout.HelpBox(GSEditorText.T(
+                    "Uncompressed ColorAlpha uses RGBAHalf (8 bytes/texel) to preserve negative/HDR DC values before SH evaluation; this is twice the memory of RGBA32.",
+                    "非圧縮の色アルファは RGBAHalf（1テクセル8バイト）で SH 評価前の負値・HDR の DC 色を保持します。RGBA32 の2倍のメモリを使用します。"), MessageType.Info);
+            }
             if (entry.compressColorAlphaToBC7 || entry.shCompression != GaussianSplatImporter.SHCompression.None)
             {
                 EditorGUILayout.HelpBox(GSEditorText.T(

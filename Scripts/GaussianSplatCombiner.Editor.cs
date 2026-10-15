@@ -1166,14 +1166,14 @@ public partial class GaussianSplatCombiner
         // texture's GUID hash) so the fused concatenation order is reproducible across domain reloads.
         // The per-object transform-table row k maps to objs[k] at runtime; an InstanceID sort is NOT
         // stable across reloads and would break the reload-from-disk fast path.
-        int sig = 20; // cheap content signature: object set + source textures + chunk/splat counts.
+        int sig = 21; // cheap content signature: object set + source textures + chunk/splat counts.
                       // Bump the seed on fused-metadata FORMAT changes so old bakes regenerate once instead of
                       // being reused via the fast path.
 
         // Source signature: hashes ONLY what the heavy fused source textures depend on - each UNIQUE source once
         // (instances dedup). Stable when a duplicate is added/removed, so the ~GB GPU source concat is skipped and
         // only the metadata rebuilds. (sig, per placement, remains the LAYOUT signature gating the fast-path reload.)
-        int sourceSig = 17;
+        int sourceSig = 18; // invalidate old RGBA32/BC7 fused color bakes
         var sourceSigSeen = new HashSet<Texture2D>();
 
         var valid = new List<GaussianSplatObject>();
@@ -1219,11 +1219,20 @@ public partial class GaussianSplatCombiner
             // domain reloads (the dependency hash only changes on an actual reimport). Commutative across objects.
             Texture2D firstTex = (lo.positions != null && lo.positions.Length > 0) ? lo.positions[0] : null;
             Texture2D shTex = lo.GetSH(0) as Texture2D;
+            int colorHash = 0;
+            if (lo.colors != null)
+            {
+                foreach (Texture2D color in lo.colors)
+                {
+                    unchecked { colorHash = colorHash * 31 + StableTextureContentHash(color); }
+                }
+            }
+            unchecked { sig += colorHash * 29; }
             unchecked { sig += StableTextureContentHash(firstTex) * 31 + StableTextureContentHash(lo.chunkRangeTexture) * 17 + StableTextureContentHash(shTex) * 23 + lo.GetFileCount() * 7 + lo.GetChunkCount() * 13 + lo.totalSplatCount + loShCoeff * 101; }
             // Per UNIQUE source only (dedup by positions[0], matching FuseLOD's sharedSources key).
             if (firstTex == null || sourceSigSeen.Add(firstTex))
             {
-                unchecked { sourceSig += StableTextureContentHash(firstTex) * 31 + StableTextureContentHash(shTex) * 23 + lo.totalSplatCount + loShCoeff * 101 + lo.GetFileCount() * 7; }
+                unchecked { sourceSig += StableTextureContentHash(firstTex) * 31 + StableTextureContentHash(shTex) * 23 + colorHash * 29 + lo.totalSplatCount + loShCoeff * 101 + lo.GetFileCount() * 7; }
             }
         }
         if (srcs.Count == 0)
